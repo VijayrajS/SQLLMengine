@@ -4,11 +4,22 @@ from langserve import add_routes
 
 import getpass
 import os
+import gnupg
 
-if not os.environ.get("OPENAI_API_KEY"):
-    os.environ["OPENAI_API_KEY"] = getpass.getpass()
+GPG_BINARY_PATH = "/opt/homebrew/bin/gpg"
+SENSITIVE_PATH = "sensitive/openai.txt"
+
+gpg = gnupg.GPG(binary=GPG_BINARY_PATH)
 
 
+def read_gpg_encrypted_file(file_path):
+    with open(file_path, 'r') as fp:
+        key = fp.read() #! TODO: this should be encrypted
+        os.environ["OPENAI_API_KEY"] = key
+
+def pre_start():
+    read_gpg_encrypted_file(sensitive_path)
+    
 app = FastAPI()
 
 
@@ -18,9 +29,9 @@ async def redirect_root_to_docs():
 
 
 # Edit this to add the chain you want to add
-add_routes(app, NotImplemented)
+# add_routes(app, NotImplemented)
 
 if __name__ == "__main__":
     import uvicorn
-
+    pre_start()
     uvicorn.run(app, host="0.0.0.0", port=8000)
