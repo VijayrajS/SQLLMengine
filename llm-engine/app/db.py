@@ -1,21 +1,20 @@
 from langchain_community.utilities import SQLDatabase
 
-
-
 class DatabaseConnection:
-	def __init__(self, uri="sqlite:///Chinook.db"):
-		"""
-		Initialize the database connection.
+    def __init__(self, uri="sqlite:///Chinook.db"):
+        """
+        Initialize the database connection.
 
-		Args:
-			uri (str): The uri of the database
-		"""
+        Args:
+            uri (str): The uri of the database.
+        """
+        self.db = SQLDatabase.from_uri(uri)
+        # print(self.db.dialect)
+        # print(self.db.get_usable_table_names())
+        # self.db.run("SELECT * FROM Artist LIMIT 10;")
 
-		self.db = SQLDatabase.from_uri(uri)
-		print(db.dialect)
-		print(db.get_usable_table_names())
-		db.run("SELECT * FROM Artist LIMIT 10;")
-
-	def execute(self, query):
-		db.run(query)
-
+    def execute(self, query):
+        """
+        Method to execute the SQL query and return the results.
+        """
+        self.db.run(query)
