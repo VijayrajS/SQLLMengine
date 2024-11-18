@@ -18,49 +18,99 @@ SENSITIVE_PATH = "sensitive/openai.txt"
 # gpg = gnupg.GPG(binary=GPG_BINARY_PATH)
 
 app = FastAPI()
-llm = None
-db = None
 
-db_conn = DatabaseConnection()
-db = db_conn.db
-llm_conn = LLMConnection()
-llm = llm_conn.llm
-    
+# ServiceManager class to handle llm and db connections
+class ServiceManager:
+    def __init__(self):
+        self.db = None
+        self.llm = None
+        self.initialize_services()
+
+    def initialize_services(self):
+        # Initialize database connection
+        db_conn = DatabaseConnection()
+        self.db = db_conn.db
+
+        # Initialize LLM connection
+        llm_conn = LLMConnection()
+        self.llm = llm_conn.llm
+
+    def get_db(self):
+        if not self.db:
+            raise HTTPException(status_code=500, detail="Database connection not initialized.")
+        return self.db
+
+    def get_llm(self):
+        if not self.llm:
+            raise HTTPException(status_code=500, detail="LLM connection not initialized.")
+        return self.llm
+
+# Initialize the service manager
+service_manager = ServiceManager()
+
 @app.get("/")
 async def redirect_root_to_docs():
     return RedirectResponse("/docs")
 
 # Edit this to add the chain you want to add
 # add_routes(app, NotImplemented)
+    
 
-def pre_start():
-    db_conn = DatabaseConnection()
-    db = db_conn.db
-    llm_conn = LLMConnection()
-    llm = llm_conn.llm
-    return llm, db
-    
-    
 def run_chain(question):
-    # Setup LangChain tools
-    print(db)
-    execute_query = QuerySQLDataBaseTool(db=db)
+    db = service_manager.get_db()
+    llm = service_manager.get_llm()
+    
+    # Generate SQL query from the question
     write_query = create_sql_query_chain(llm, db)
     
-    # Combine the write and execute steps
-    chain = write_query | execute_query
+    # Execute the generated SQL query
+    execute_query = QuerySQLDataBaseTool(db=db)
+    error_message = ""
+    for attempt in range(3):  # Attempt up to 3 times to get a valid query
+        sql_query = write_query.invoke({"question": question})
+        try:
+            response = execute_query.invoke({"query": sql_query})
+           # return {"sql_query": sql_query, "response":  response}
+        except Exception as e:
+            error_message = str(e)
+            print(f"Attempt {attempt + 1}: Error encountered: {error_message}")
+            
+            # Provide feedback to the LLM to refine the query
+            feedback_prompt = (
+                f"The query '{sql_query}' failed with the error: '{error_message}'. "
+                f"Please provide a corrected SQL query for the following question: '{question}'"
+            )
+            question = feedback_prompt  # Update question with feedback prompt
     
-    # Invoke the chain and capture the response
-    response = chain.invoke({"question": question})
-    
-    # Capture the query generated from the question (you can extract this from the write_query tool)
-    generated_query = write_query.llm_chain.run(question)
-    
-    # Return both the generated query and the response
-    return {
-        "query": generated_query,
-        "response": response
-    }
+    #return {"sql_query": sql_query, "response": response, "error":error_message}
+
+    # If all attempts fail, ask LLM to provide user guidance
+    guidance_prompt = (
+        f"The query '{sql_query}' failed with the error: '{error_message}'. "
+        "It appears that the specified table does not exist in the database. "
+        "Please provide a response that explains this to the user and suggests potential solutions, such as:"
+        "\n1. Checking for typos in the table name."
+        "\n2. Verifying if the table exists in the database and if they have access to it."
+        "\n3. Creating the table if it is missing or consulting with a database administrator if unsure."
+    )
+    guidance_response = llm.invoke({"question": guidance_prompt})
+    print(guidance_response)
+    # Render the final JSON response with guidance if all attempts fail
+    # return {
+    #         "error": "Failed to generate a valid SQL query after multiple attempts.",
+    #         "sql_query": sql_query,
+    #         "response": guidance_response
+    #         }
+    return {"sql_query": sql_query, "response": response, "error":error_message, "guidance_response": guidance_response}
+    # return JSONResponse(
+    #     status_code=500,
+    #     content={
+    #         "error": "Failed to generate a valid SQL query after multiple attempts.",
+    #         "sql_query": sql_query,
+    #         "response": guidance_response
+    #     })
+
+
 
 
 # Define the request body model using Pydantic
@@ -85,6 +135,4 @@ async def handle_query(query_request: QueryRequest):
 
 if __name__ == "__main__":
     import uvicorn
-    llm, db = pre_start()
-    print(db)
     uvicorn.run(app, host="0.0.0.0", port=8000)

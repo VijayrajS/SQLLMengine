@@ -8,6 +8,7 @@ class DatabaseConnection:
         Args:
             uri (str): The uri of the database.
         """
+        uri = "mysql+mysqlconnector://root:Kavyasrit%402000@localhost/local_norp"
         self.db = SQLDatabase.from_uri(uri)
         # print(self.db.dialect)
         # print(self.db.get_usable_table_names())
