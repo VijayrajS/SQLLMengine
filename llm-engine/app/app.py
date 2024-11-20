@@ -1,16 +1,30 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from langserve import add_routes
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
-from db import DatabaseConnection
-from llm import LLMConnection
+from app.ServiceManager import ServiceManager
 from langchain_community.tools.sql_database.tool import QuerySQLDataBaseTool
 from langchain.chains import create_sql_query_chain
-
-from db import DatabaseConnection
-from llm import LLMConnection
-
+from langchain.chains import SequentialChain
+from langchain_core.prompts import ChatPromptTemplate
+from langchain.chains.llm import LLMChain
+from langchain.chains.base import Chain
+from langchain.llms.base import LLM
 import gnupg
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel
+from typing import List, Optional, Dict, Any
+import json
+from langchain.memory import ConversationBufferMemory
+from langchain.schema import HumanMessage, AIMessage, SystemMessage
+from langchain.prompts import ChatPromptTemplate, MessagesPlaceholder
+from langchain.chains import create_sql_query_chain
+from langchain.chat_models import ChatOpenAI
+import redis
+from datetime import datetime
+from constants import *
+from prompts import *
+from langchain.output_parsers import StrOutputParser
 
 # GPG_BINARY_PATH = "/opt/homebrew/bin/gpg"
 SENSITIVE_PATH = "sensitive/openai.txt"
@@ -19,119 +33,243 @@ SENSITIVE_PATH = "sensitive/openai.txt"
 
 app = FastAPI()
 
-# ServiceManager class to handle llm and db connections
-class ServiceManager:
-    def __init__(self):
-        self.db = None
-        self.llm = None
-        self.initialize_services()
-
-    def initialize_services(self):
-        # Initialize database connection
-        db_conn = DatabaseConnection()
-        self.db = db_conn.db
-
-        # Initialize LLM connection
-        llm_conn = LLMConnection()
-        self.llm = llm_conn.llm
-
-    def get_db(self):
-        if not self.db:
-            raise HTTPException(status_code=500, detail="Database connection not initialized.")
-        return self.db
-
-    def get_llm(self):
-        if not self.llm:
-            raise HTTPException(status_code=500, detail="LLM connection not initialized.")
-        return self.llm
-
 # Initialize the service manager
 service_manager = ServiceManager()
+redis_client = service_manager.get_redis()
 
 @app.get("/")
 async def redirect_root_to_docs():
     return RedirectResponse("/docs")
 
-# Edit this to add the chain you want to add
-# add_routes(app, NotImplemented)
-    
 
-def run_chain(question):
+class ChatMessage(BaseModel):
+    session_id: str
+    message: str
+    message_type: str
+
+
+class ChatResponse(BaseModel):
+    session_id: str
+    response: str
+    sql_query: Optional[str]
+    query_result: Optional[str]
+    history: List[dict]
+
+
+class GuidancePromptChain(Chain):
+    """
+    A separate chain to generate user-friendly guidance in case of failures.
+    """
+    def __init__(self, llm, **kwargs):
+        super().__init__(**kwargs)
+        self.llm = llm
+
+    @property
+    def input_keys(self):
+        return ["sql_query", "error_message"]
+
+    @property
+    def output_keys(self):
+        return ["guidance_response"]
+
+    def _call(self, inputs):
+        sql_query = inputs["sql_query"]
+        error_message = inputs["error_message"]
+
+        # Chat Prompt Template for guidance
+        prompt = ChatPromptTemplate.from_messages(
+            [{"role": "system", "content": "You are an assistant providing clear guidance for database-related issues."},
+             {"role": "user", "content": (
+                f"The query '{sql_query}' failed with the error: '{error_message}'. "
+                "Please provide user-friendly guidance including:"
+                "\n1. Checking for typos in the table name."
+                "\n2. Verifying if the table exists in the database and if they have access to it."
+                "\n3. Consulting a database administrator for missing tables or access issues."
+            )}]
+        )
+
+        guidance_response = self.llm.invoke(prompt, sql_query=sql_query, error_message=error_message)
+        return {"guidance_response": guidance_response}
+
+
+class SQLExecutionChain(Chain):
+    """
+    Chain to handle SQL execution and feedback.
+    """
+    def __init__(self, db, llm, guidance_chain, **kwargs):
+        super().__init__(**kwargs)
+        self.db = db
+        self.llm = llm
+        self.guidance_chain = guidance_chain
+        self.query_tool = QuerySQLDataBaseTool(db=self.db)
+
+    @property
+    def input_keys(self):
+        return ["sql_query", "original_question"]
+
+    @property
+    def output_keys(self):
+        return ["response", "error", "guidance_response"]
+
+    def _call(self, inputs):
+        print("entered sql execution chain")
+        sql_query = inputs["sql_query"]
+        original_question = inputs["original_question"]
+        error_message = ""
+
+        # Try executing the query up to 3 times
+        for attempt in range(3):
+            try:
+                response = self.query_tool.invoke({"query": sql_query})
+                print("did not fail - response")
+                print(response)
+                return {"response": response, "error": None, "guidance_response": None}
+            except Exception as e:
+                error_message = str(e)
+                print(f"Attempt {attempt + 1}: Error encountered: {error_message}")
+
+                # Update SQL query with error feedback
+                feedback_prompt = ChatPromptTemplate.from_messages(
+                    [{"role": "system", "content": "You are a SQL query refinement assistant."},
+                     {"role": "user", "content": (
+                        f"The query '{sql_query}' failed with the error: '{error_message}'. "
+                        f"Refine the SQL query for the following question: '{original_question}'."
+                    )}]
+                )
+                sql_query = self.llm.invoke(prompt=feedback_prompt, sql_query=sql_query, error_message=error_message, original_question=original_question)
+
+        # If all attempts fail, use the guidance chain
+        guidance_result = self.guidance_chain.run({"sql_query": sql_query, "error_message": error_message})
+        print("guidance_result")
+        print(type(guidance_result))
+        print(guidance_result)
+        return {"response": None, "error": error_message, "guidance_response": guidance_result["guidance_response"]}
+
+def run_sql_chain(question: str, history:List[dict]):
+    """Run the SQL generation chain with conversation history"""
+    # Initialize the LLMManager and database
     db = service_manager.get_db()
     llm = service_manager.get_llm()
     
-    # Generate SQL query from the question
-    write_query = create_sql_query_chain(llm, db)
+    # TODO implement just the relavant tables information if needed
+    # this might totally remove the below separation format1
+    table_info = db.get_table_info()
     
-    # Execute the generated SQL query
-    execute_query = QuerySQLDataBaseTool(db=db)
-    error_message = ""
-    for attempt in range(3):  # Attempt up to 3 times to get a valid query
-        sql_query = write_query.invoke({"question": question})
-        try:
-            response = execute_query.invoke({"query": sql_query})
-           # return {"sql_query": sql_query, "response":  response}
-        except Exception as e:
-            error_message = str(e)
-            print(f"Attempt {attempt + 1}: Error encountered: {error_message}")
-            
-            # Provide feedback to the LLM to refine the query
-            feedback_prompt = (
-                f"The query '{sql_query}' failed with the error: '{error_message}'. "
-                f"Please provide a corrected SQL query for the following question: '{question}'"
-            )
-            question = feedback_prompt  # Update question with feedback prompt
+    # TODO update this if needed and get it from request
+    result = None
     
-    #return {"sql_query": sql_query, "response": response, "error":error_message}
-
-    # If all attempts fail, ask LLM to provide user guidance
-    guidance_prompt = (
-        f"The query '{sql_query}' failed with the error: '{error_message}'. "
-        "It appears that the specified table does not exist in the database. "
-        "Please provide a response that explains this to the user and suggests potential solutions, such as:"
-        "\n1. Checking for typos in the table name."
-        "\n2. Verifying if the table exists in the database and if they have access to it."
-        "\n3. Creating the table if it is missing or consulting with a database administrator if unsure."
-    )
-    guidance_response = llm.invoke({"question": guidance_prompt})
-    print(guidance_response)
-    # Render the final JSON response with guidance if all attempts fail
-    # return {
-    #         "error": "Failed to generate a valid SQL query after multiple attempts.",
-    #         "sql_query": sql_query,
-    #         "response": guidance_response
-    #         }
-    return {"sql_query": sql_query, "response": response, "error":error_message, "guidance_response": guidance_response}
-    # return JSONResponse(
-    #     status_code=500,
-    #     content={
-    #         "error": "Failed to generate a valid SQL query after multiple attempts.",
-    #         "sql_query": sql_query,
-    #         "response": guidance_response
-    #     })
-
-
-
+    print(f"len of history: {len(history)}")
+    if not history:
+        sql_generation_chain = INITIAL_PROMPT | llm | StrOutputParser()
+        result = sql_generation_chain.invoke({
+            "message": question, 
+            "history": history,
+            "table_info": table_info,
+            "top_k": TOP_K_ROWS
+        })
+    else:
+        sql_generation_chain = CONTINUATION_PROMPT | llm | StrOutputParser()
+        result =  sql_generation_chain.invoke({
+            "message": question, 
+            "history": history
+        })
+    return result
+    
 
 # Define the request body model using Pydantic
-class QueryRequest(BaseModel):
-    question: str
-    
-# Define the POST request handler for sending the prompt
-@app.post("/query")
-async def handle_query(query_request: QueryRequest):
-    # Extract the question from the request body
-    question = query_request.question
+class ChatRequest(BaseModel):
+    session_id: str
+    message: str
+    message_type: str
 
-    if not question:
+class ChatResponse(BaseModel):
+    session_id: str
+    response: str
+    sql_query: Optional[str]
+    sql_valid: bool
+    query_result: Optional[str]
+
+def get_message_history(session_id: str) -> ConversationBufferMemory:
+    """Retrieve chat history for a session from Redis cache"""
+    memory = ConversationBufferMemory(
+        memory_key="history",
+        return_messages=True
+    )
+    cached_messages = redis_client.get(f"chat:{session_id}")
+    if cached_messages:
+        messages = json.loads(cached_messages)
+        for msg in messages:
+            if msg['type'] == 'human':
+                memory.chat_memory.add_message(HumanMessage(content=msg['content']))
+            elif msg['type'] == 'ai':
+                memory.chat_memory.add_message(AIMessage(content=msg['content']))
+            elif msg['type'] == 'system':
+                memory.chat_memory.add_message(SystemMessage(content=msg['content']))
+    return memory
+
+
+def update_chat_memory_and_redis_history(session_id: str, message_content:str, message_type:str, 
+                                   memory: ConversationBufferMemory) -> ConversationBufferMemory:
+    """Save updated chat history to Redis cache and memory object"""
+    # Update cache
+    message = {
+        "type": message_type,
+        "content": message_content
+    }
+    # Convert the message to a JSON string
+    message_json = json.dumps(message)
+    # Append the message to the list associated with the session ID
+    # rpush takes care if the session_id does not exist
+    redis_client.rpush(f"chat:{session_id}", message_json)
+    # Update the TTL for the session ID
+    redis_client.expire(session_id, CHAT_HISTORY_TTL)
+    print(f"Message appended to session {session_id} and TTL updated to {CHAT_HISTORY_TTL} seconds")
+
+    # Update conversation buffer memory
+    if message_type == 'human':
+        memory.chat_memory.add_message(HumanMessage(content=message_content))
+    elif message_type == 'ai':
+        memory.chat_memory.add_message(AIMessage(content=message_content))
+    elif message_type == 'system':
+        memory.chat_memory.add_message(SystemMessage(content=message_content))
+    print(f"Updated memory with latest message")
+    return memory
+
+
+# Define the POST request handler for sending the prompt
+# remove chat response
+# @app.post("/query", response_model=ChatResponse)
+@app.post("/query")
+async def handle_query(request: Request):
+    json_data = await request.json()
+    chat_request = ChatRequest(
+        session_id=json_data["session_id"],
+        message=json_data["message"],
+        message_type=json_data["message_type"]
+    )    
+
+    if not chat_request.message:
         raise HTTPException(status_code=400, detail="No question provided")
+    
+    memory = get_message_history(chat_request.session_id)
+    memory = update_chat_memory_and_redis_history(chat_request.session_id, chat_request.message, 
+                                                  chat_request.message_type, memory)
 
     # Invoke the chain with the question
     try:
-        result = run_chain(question)
+        result = run_sql_chain(
+            chat_request.message,
+            memory.load_memory_variables({})["history"]
+        )
+        memory = update_chat_memory_and_redis_history(chat_request.session_id, chat_request.message,
+                                                      chat_request.message_type, memory)
+        print(result)
         return result
     except Exception as e:
+        print(e)
+        print("chain failed")
         raise HTTPException(status_code=500, detail=str(e))
+
 
 if __name__ == "__main__":
     import uvicorn

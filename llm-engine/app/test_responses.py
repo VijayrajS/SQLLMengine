@@ -28,6 +28,6 @@ def run_query(question):
 if __name__ == "__main__":
     question = "Get median and mean household income aggregated for each year."
    # question = "For each area in New York, give count of each crime type."
-    question = "Give me number of employees who are male"
+  #  question = "Give me number of employees who are male"
    # question = "Retrieve all records from the economic_income_and_benefits table where the mean_household_income is more than 100,000 and the crime classification (Crime_Class) is 'Felony'."
     run_query(question)

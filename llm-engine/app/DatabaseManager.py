@@ -1,6 +1,6 @@
 from langchain_community.utilities import SQLDatabase
 
-class DatabaseConnection:
+class DatabaseManager:
     def __init__(self, uri="sqlite:///Chinook.db"):
         """
         Initialize the database connection.
