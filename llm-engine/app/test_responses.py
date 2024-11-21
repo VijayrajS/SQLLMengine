@@ -1,10 +1,13 @@
 import requests
 import json
+import argparse
 
-def run_query(question):
+
+def run_query(question, session_id):
     url = "http://127.0.0.1:8000/query"
     headers = {"Content-Type": "application/json"}
-    payload = {"question": question}
+    payload = {"session_id": session_id, "question": question, "message_type": "human"}
+    print(payload)
     
     try:
         # Send POST request
@@ -18,16 +21,21 @@ def run_query(question):
         
         # Print the response nicely formatted
         print("Response Data:")
-        print(json.dumps(response_data, indent=4))
-        print(response)
+        # print(json.dumps(response_data, indent=4))
+        print(response_data["content"])
 
     except requests.exceptions.RequestException as e:
             print(f"Error occurred: {e}")
 
 # Example usage
 if __name__ == "__main__":
-    question = "Get median and mean household income aggregated for each year."
-   # question = "For each area in New York, give count of each crime type."
-  #  question = "Give me number of employees who are male"
-   # question = "Retrieve all records from the economic_income_and_benefits table where the mean_household_income is more than 100,000 and the crime classification (Crime_Class) is 'Felony'."
-    run_query(question)
+    question = "Get median household income aggregated for each year."
+    question = "Give me the mean now"
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--question", help="User question", type=str)
+    parser.add_argument("--session_id", help="session id", type=int)
+    args = parser.parse_args()
+    # question = "For each area in New York, give count of each crime type."
+    # question = "Give me number of employees who are male"
+    # question = "Retrieve all records from the economic_income_and_benefits table where the mean_household_income is more than 100,000 and the crime classification (Crime_Class) is 'Felony'."
+    run_query(args.question, args.session_id)

@@ -2,7 +2,7 @@ from fastapi import FastAPI, HTTPException, Request
 from langserve import add_routes
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
-from app.ServiceManager import ServiceManager
+from ServiceManager import ServiceManager
 from langchain_community.tools.sql_database.tool import QuerySQLDataBaseTool
 from langchain.chains import create_sql_query_chain
 from langchain.chains import SequentialChain
@@ -24,7 +24,7 @@ import redis
 from datetime import datetime
 from constants import *
 from prompts import *
-from langchain.output_parsers import StrOutputParser
+# from langchain.output_parsers import StrOutputParser
 
 # GPG_BINARY_PATH = "/opt/homebrew/bin/gpg"
 SENSITIVE_PATH = "sensitive/openai.txt"
@@ -36,6 +36,7 @@ app = FastAPI()
 # Initialize the service manager
 service_manager = ServiceManager()
 redis_client = service_manager.get_redis()
+redis_client = redis_client.redis
 
 @app.get("/")
 async def redirect_root_to_docs():
@@ -152,7 +153,7 @@ def run_sql_chain(question: str, history:List[dict]):
     llm = service_manager.get_llm()
     
     # TODO implement just the relavant tables information if needed
-    # this might totally remove the below separation format1
+    # this might totally remove the below separation format
     table_info = db.get_table_info()
     
     # TODO update this if needed and get it from request
@@ -160,17 +161,17 @@ def run_sql_chain(question: str, history:List[dict]):
     
     print(f"len of history: {len(history)}")
     if not history:
-        sql_generation_chain = INITIAL_PROMPT | llm | StrOutputParser()
+        sql_generation_chain = INITIAL_PROMPT | llm
         result = sql_generation_chain.invoke({
-            "message": question, 
+            "question": question, 
             "history": history,
             "table_info": table_info,
             "top_k": TOP_K_ROWS
         })
     else:
-        sql_generation_chain = CONTINUATION_PROMPT | llm | StrOutputParser()
+        sql_generation_chain = CONTINUATION_PROMPT | llm 
         result =  sql_generation_chain.invoke({
-            "message": question, 
+            "question": question, 
             "history": history
         })
     return result
@@ -178,7 +179,7 @@ def run_sql_chain(question: str, history:List[dict]):
 
 # Define the request body model using Pydantic
 class ChatRequest(BaseModel):
-    session_id: str
+    session_id: int
     message: str
     message_type: str
 
@@ -191,20 +192,28 @@ class ChatResponse(BaseModel):
 
 def get_message_history(session_id: str) -> ConversationBufferMemory:
     """Retrieve chat history for a session from Redis cache"""
+    print("inside getting message history")
     memory = ConversationBufferMemory(
         memory_key="history",
         return_messages=True
     )
-    cached_messages = redis_client.get(f"chat:{session_id}")
+    print("created memory object")
+    cached_messages = redis_client.lrange(f"chat:{session_id}", 0, -1)
+    print("cached_messages fetched")
     if cached_messages:
-        messages = json.loads(cached_messages)
-        for msg in messages:
+        print("cached messages exist")
+        print(type(cached_messages))
+        print(cached_messages)
+        for msg in cached_messages:
+            msg = json.loads(msg)
+            print("printing msg", msg)
             if msg['type'] == 'human':
                 memory.chat_memory.add_message(HumanMessage(content=msg['content']))
             elif msg['type'] == 'ai':
                 memory.chat_memory.add_message(AIMessage(content=msg['content']))
             elif msg['type'] == 'system':
                 memory.chat_memory.add_message(SystemMessage(content=msg['content']))
+    print("memory fetched")
     return memory
 
 
@@ -244,7 +253,7 @@ async def handle_query(request: Request):
     json_data = await request.json()
     chat_request = ChatRequest(
         session_id=json_data["session_id"],
-        message=json_data["message"],
+        message=json_data["question"],
         message_type=json_data["message_type"]
     )    
 
@@ -252,6 +261,7 @@ async def handle_query(request: Request):
         raise HTTPException(status_code=400, detail="No question provided")
     
     memory = get_message_history(chat_request.session_id)
+    print("got memory")
     memory = update_chat_memory_and_redis_history(chat_request.session_id, chat_request.message, 
                                                   chat_request.message_type, memory)
 
@@ -261,9 +271,9 @@ async def handle_query(request: Request):
             chat_request.message,
             memory.load_memory_variables({})["history"]
         )
-        memory = update_chat_memory_and_redis_history(chat_request.session_id, chat_request.message,
-                                                      chat_request.message_type, memory)
-        print(result)
+        print(result.content)
+        memory = update_chat_memory_and_redis_history(chat_request.session_id, result.content,
+                                                      "ai", memory)
         return result
     except Exception as e:
         print(e)
