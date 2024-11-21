@@ -29,6 +29,8 @@ app = FastAPI()
 service_manager = ServiceManager()
 redis_client = service_manager.get_redis()
 redis_client = redis_client.redis
+db = service_manager.get_db()
+llm = service_manager.get_llm()
 
 @app.get("/")
 async def redirect_root_to_docs():
@@ -48,102 +50,8 @@ class ChatResponse(BaseModel):
     query_result: Optional[str]
     history: List[dict]
 
-
-class GuidancePromptChain(Chain):
-    """
-    A separate chain to generate user-friendly guidance in case of failures.
-    """
-    def __init__(self, llm, **kwargs):
-        super().__init__(**kwargs)
-        self.llm = llm
-
-    @property
-    def input_keys(self):
-        return ["sql_query", "error_message"]
-
-    @property
-    def output_keys(self):
-        return ["guidance_response"]
-
-    def _call(self, inputs):
-        sql_query = inputs["sql_query"]
-        error_message = inputs["error_message"]
-
-        # Chat Prompt Template for guidance
-        prompt = ChatPromptTemplate.from_messages(
-            [{"role": "system", "content": "You are an assistant providing clear guidance for database-related issues."},
-             {"role": "user", "content": (
-                f"The query '{sql_query}' failed with the error: '{error_message}'. "
-                "Please provide user-friendly guidance including:"
-                "\n1. Checking for typos in the table name."
-                "\n2. Verifying if the table exists in the database and if they have access to it."
-                "\n3. Consulting a database administrator for missing tables or access issues."
-            )}]
-        )
-
-        guidance_response = self.llm.invoke(prompt, sql_query=sql_query, error_message=error_message)
-        return {"guidance_response": guidance_response}
-
-
-class SQLExecutionChain(Chain):
-    """
-    Chain to handle SQL execution and feedback.
-    """
-    def __init__(self, db, llm, guidance_chain, **kwargs):
-        super().__init__(**kwargs)
-        self.db = db
-        self.llm = llm
-        self.guidance_chain = guidance_chain
-        self.query_tool = QuerySQLDataBaseTool(db=self.db)
-
-    @property
-    def input_keys(self):
-        return ["sql_query", "original_question"]
-
-    @property
-    def output_keys(self):
-        return ["response", "error", "guidance_response"]
-
-    def _call(self, inputs):
-        print("entered sql execution chain")
-        sql_query = inputs["sql_query"]
-        original_question = inputs["original_question"]
-        error_message = ""
-
-        # Try executing the query up to 3 times
-        for attempt in range(3):
-            try:
-                response = self.query_tool.invoke({"query": sql_query})
-                print("did not fail - response")
-                print(response)
-                return {"response": response, "error": None, "guidance_response": None}
-            except Exception as e:
-                error_message = str(e)
-                print(f"Attempt {attempt + 1}: Error encountered: {error_message}")
-
-                # Update SQL query with error feedback
-                feedback_prompt = ChatPromptTemplate.from_messages(
-                    [{"role": "system", "content": "You are a SQL query refinement assistant."},
-                     {"role": "user", "content": (
-                        f"The query '{sql_query}' failed with the error: '{error_message}'. "
-                        f"Refine the SQL query for the following question: '{original_question}'."
-                    )}]
-                )
-                sql_query = self.llm.invoke(prompt=feedback_prompt, sql_query=sql_query, error_message=error_message, original_question=original_question)
-
-        # If all attempts fail, use the guidance chain
-        guidance_result = self.guidance_chain.run({"sql_query": sql_query, "error_message": error_message})
-        print("guidance_result")
-        print(type(guidance_result))
-        print(guidance_result)
-        return {"response": None, "error": error_message, "guidance_response": guidance_result["guidance_response"]}
-
 def run_sql_chain(question: str, history: List[dict], session_id: str, memory: ConversationBufferMemory):
     """Run the SQL generation chain with conversation history"""
-    # Initialize the LLMManager and database
-    db = service_manager.get_db()
-    llm = service_manager.get_llm()
-    
     # TODO implement just the relavant tables information if needed
     # this might totally remove the below separation format
     table_info = db.get_table_info()
@@ -198,7 +106,6 @@ def run_sql_chain(question: str, history: List[dict], session_id: str, memory: C
 
     # update redis and history
     for msg in messages:
-        print(len(messages))
         # Check message type
         message_type = ""
         message = ""
@@ -219,7 +126,7 @@ def run_sql_chain(question: str, history: List[dict], session_id: str, memory: C
 
     memory = update_chat_memory_and_redis_history(session_id, result.content, 
                                                   "ai", memory)
-    return result, memory
+    return (result, memory)
     
 
 # Define the request body model using Pydantic
@@ -237,26 +144,20 @@ class ChatResponse(BaseModel):
 
 def get_message_history(session_id: str) -> ConversationBufferMemory:
     """Retrieve chat history for a session from Redis cache"""
-    print("inside getting message history")
     memory = ConversationBufferMemory(
         memory_key="history",
         return_messages=True
     )
-    print("created memory object")
     cached_messages = redis_client.lrange(f"chat:{session_id}", 0, -1)
-    print("cached_messages fetched")
     if cached_messages:
-        print("cached messages exist")
         for msg in cached_messages:
             msg = json.loads(msg)
-            print("printing msg", msg)
             if msg['type'] == 'human':
                 memory.chat_memory.add_message(HumanMessage(content=msg['content']))
             elif msg['type'] == 'ai':
                 memory.chat_memory.add_message(AIMessage(content=msg['content']))
             elif msg['type'] == 'system':
                 memory.chat_memory.add_message(SystemMessage(content=msg['content']))
-    print("memory fetched")
     return memory
 
 
@@ -284,9 +185,18 @@ def update_chat_memory_and_redis_history(session_id: str, message_content:str, m
         memory.chat_memory.add_message(AIMessage(content=message_content))
     elif message_type == 'system':
         memory.chat_memory.add_message(SystemMessage(content=message_content))
-    print(f"Updated memory with latest message")
     return memory
 
+def execute_sql_query(sql_query:str):
+    execute_query = QuerySQLDataBaseTool(db=db)
+    query_results=None
+    try:
+        query_results = execute_query.invoke({"query": sql_query})
+    except Exception as e:
+        print("must add feedback loop here")
+        error_message = str(e)
+        print(error_message)
+    return query_results
 
 # Define the POST request handler for sending the prompt
 # remove chat response
@@ -301,24 +211,38 @@ async def handle_query(request: Request):
     )
     if not chat_request.message:
         raise HTTPException(status_code=400, detail="No question provided")
-    
+    sql_query = None
+    query_results = None 
     memory = get_message_history(chat_request.session_id)
-    print("got memory")
-    print(memory)
     # Invoke the chain with the question
     try:
-        result, memory = run_sql_chain(
+        sql_query, memory = run_sql_chain(
             chat_request.message,
             memory.load_memory_variables({})["history"],
             chat_request.session_id,
             memory
         )
-        return result
     except Exception as e:
         print(e)
         print("chain failed")
         raise HTTPException(status_code=500, detail=str(e))
-
+    print("\n\n")
+    print(sql_query)
+    print(type(sql_query))
+    content = sql_query.content
+    if content.startswith('```sql') and content.endswith('```'):
+        sql_query = content[6:-3].strip()  # Remove the markdown ```sql and ```
+    else:
+        sql_query = content.strip()
+    print("\n\n")
+    print(sql_query)
+    print(type(sql_query))
+    
+    query_results = execute_sql_query(
+        sql_query
+    )
+    print(query_results)
+    return {"sql_query": sql_query, "query_results": query_results}
 
 if __name__ == "__main__":
     import uvicorn

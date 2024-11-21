@@ -1,7 +1,7 @@
 import requests
 import json
 import argparse
-
+from util import pretty_print_results
 
 def run_query(question, session_id):
     url = "http://127.0.0.1:8000/query"
@@ -12,18 +12,13 @@ def run_query(question, session_id):
     try:
         # Send POST request
         response = requests.post(url, headers=headers, json=payload)
-        
-        # Raise an error for bad status codes
-        # response.raise_for_status()
-    
-        # Parse the response JSON
+        # Parse JSON response
         response_data = response.json()
         
-        # Print the response nicely formatted
-        print("Response Data:")
-        # print(json.dumps(response_data, indent=4))
-        print(response_data["content"])
-
+        print("SQL query:")
+        print(response_data.get("sql_query", "No SQL query returned"))
+        print("Table:")
+        print(response_data.get("query_results", "No query result returned"))
     except requests.exceptions.RequestException as e:
             print(f"Error occurred: {e}")
 
