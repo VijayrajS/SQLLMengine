@@ -1,30 +1,22 @@
 from fastapi import FastAPI, HTTPException, Request
-from langserve import add_routes
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
 from ServiceManager import ServiceManager
 from langchain_community.tools.sql_database.tool import QuerySQLDataBaseTool
-from langchain.chains import create_sql_query_chain
-from langchain.chains import SequentialChain
 from langchain_core.prompts import ChatPromptTemplate
-from langchain.chains.llm import LLMChain
 from langchain.chains.base import Chain
-from langchain.llms.base import LLM
 import gnupg
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from typing import List, Optional, Dict, Any
 import json
 from langchain.memory import ConversationBufferMemory
-from langchain.schema import HumanMessage, AIMessage, SystemMessage
+from langchain.schema import HumanMessage, AIMessage, SystemMessage, BaseMessage
 from langchain.prompts import ChatPromptTemplate, MessagesPlaceholder
-from langchain.chains import create_sql_query_chain
-from langchain.chat_models import ChatOpenAI
-import redis
-from datetime import datetime
+from langchain_core.prompt_values import ChatPromptValue
+from langchain_core.runnables.base import RunnableLambda
 from constants import *
 from prompts import *
-# from langchain.output_parsers import StrOutputParser
 
 # GPG_BINARY_PATH = "/opt/homebrew/bin/gpg"
 SENSITIVE_PATH = "sensitive/openai.txt"
@@ -146,7 +138,7 @@ class SQLExecutionChain(Chain):
         print(guidance_result)
         return {"response": None, "error": error_message, "guidance_response": guidance_result["guidance_response"]}
 
-def run_sql_chain(question: str, history:List[dict]):
+def run_sql_chain(question: str, history: List[dict], session_id: str, memory: ConversationBufferMemory):
     """Run the SQL generation chain with conversation history"""
     # Initialize the LLMManager and database
     db = service_manager.get_db()
@@ -155,26 +147,79 @@ def run_sql_chain(question: str, history:List[dict]):
     # TODO implement just the relavant tables information if needed
     # this might totally remove the below separation format
     table_info = db.get_table_info()
-    
-    # TODO update this if needed and get it from request
-    result = None
-    
-    print(f"len of history: {len(history)}")
+ 
+    # Prepare messages for the prompt
+    messages = []
     if not history:
-        sql_generation_chain = INITIAL_PROMPT | llm
-        result = sql_generation_chain.invoke({
-            "question": question, 
-            "history": history,
+        # For initial prompt (no history)
+        initial_prompt_value = INITIAL_PROMPT.invoke({
             "table_info": table_info,
-            "top_k": TOP_K_ROWS
+            "top_k": TOP_K_ROWS  
         })
+        continuation_prompt_value = CONTINUATION_PROMPT.invoke({
+            "question": question,
+            "history": []
+        })
+        messages.extend(initial_prompt_value.messages)
+        messages.extend(continuation_prompt_value.messages)
     else:
-        sql_generation_chain = CONTINUATION_PROMPT | llm 
-        result =  sql_generation_chain.invoke({
-            "question": question, 
+        # For continuation prompt (with history)
+        continuation_prompt_value = CONTINUATION_PROMPT.invoke({
+            "question": question,
             "history": history
         })
-    return result
+        messages.extend(continuation_prompt_value.messages)
+
+    # Ensure all messages are of type BaseMessage with correct types
+    formatted_messages = []
+    for msg in messages:
+        if isinstance(msg, dict):
+            msg_type = msg.get("type", "human")  # Default to "human" if type is missing
+            content = msg.get("content", "")
+
+            if msg_type == "system":
+                formatted_messages.append(SystemMessage(content=content))
+            elif msg_type == "human":
+                formatted_messages.append(HumanMessage(content=content))
+        elif isinstance(msg, BaseMessage):
+            # If already a BaseMessage, add directly
+            formatted_messages.append(msg)
+        else:
+            raise ValueError(f"Unexpected message format: {msg}")
+
+    # Create the SQL generation chain
+    sql_generation_chain = (
+        RunnableLambda(lambda x: x)  # Pass messages directly
+        | llm
+    )
+
+    # Invoke the chain
+    result = sql_generation_chain.invoke(formatted_messages)
+
+    # update redis and history
+    for msg in messages:
+        print(len(messages))
+        # Check message type
+        message_type = ""
+        message = ""
+        if isinstance(msg, SystemMessage):
+            message_type="system",
+            message = msg.content
+        elif isinstance(msg, HumanMessage):
+            message_type="human",
+            message = msg.content
+        elif isinstance(msg, AIMessage):
+            message_type="ai",
+            message = msg.content
+        elif isinstance(msg, MessagesPlaceholder):
+            continue
+        if message_type and message:
+           update_chat_memory_and_redis_history(session_id, message, 
+                                                message_type, memory)
+
+    memory = update_chat_memory_and_redis_history(session_id, result.content, 
+                                                  "ai", memory)
+    return result, memory
     
 
 # Define the request body model using Pydantic
@@ -202,8 +247,6 @@ def get_message_history(session_id: str) -> ConversationBufferMemory:
     print("cached_messages fetched")
     if cached_messages:
         print("cached messages exist")
-        print(type(cached_messages))
-        print(cached_messages)
         for msg in cached_messages:
             msg = json.loads(msg)
             print("printing msg", msg)
@@ -218,7 +261,7 @@ def get_message_history(session_id: str) -> ConversationBufferMemory:
 
 
 def update_chat_memory_and_redis_history(session_id: str, message_content:str, message_type:str, 
-                                   memory: ConversationBufferMemory) -> ConversationBufferMemory:
+                                         memory: ConversationBufferMemory) -> ConversationBufferMemory:
     """Save updated chat history to Redis cache and memory object"""
     # Update cache
     message = {
@@ -255,25 +298,21 @@ async def handle_query(request: Request):
         session_id=json_data["session_id"],
         message=json_data["question"],
         message_type=json_data["message_type"]
-    )    
-
+    )
     if not chat_request.message:
         raise HTTPException(status_code=400, detail="No question provided")
     
     memory = get_message_history(chat_request.session_id)
     print("got memory")
-    memory = update_chat_memory_and_redis_history(chat_request.session_id, chat_request.message, 
-                                                  chat_request.message_type, memory)
-
+    print(memory)
     # Invoke the chain with the question
     try:
-        result = run_sql_chain(
+        result, memory = run_sql_chain(
             chat_request.message,
-            memory.load_memory_variables({})["history"]
+            memory.load_memory_variables({})["history"],
+            chat_request.session_id,
+            memory
         )
-        print(result.content)
-        memory = update_chat_memory_and_redis_history(chat_request.session_id, result.content,
-                                                      "ai", memory)
         return result
     except Exception as e:
         print(e)
