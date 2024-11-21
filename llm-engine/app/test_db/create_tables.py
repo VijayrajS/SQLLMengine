@@ -67,7 +67,7 @@ CREATE TABLE IF NOT EXISTS economic_income_and_benefits (
 """)
 cursor.execute("""
 CREATE TABLE `nyc_crime_data` (
-	`Crime_ID` DECIMAL(38, 0) NOT NULL PRIMARY KEY,
+	`Crime_ID` DECIMAL(38, 0) NOT NULL  KEY,
 	`Report_#` VARCHAR(14) NOT NULL, 
 	`Crime_Date` DATE, 
 	`Crime_Time` TIME NOT NULL, 
@@ -76,6 +76,17 @@ CREATE TABLE `nyc_crime_data` (
 	`Area_Name` VARCHAR(13) NOT NULL, 
 	`Latitude` DECIMAL(38, 15), 
 	`Longitude` DECIMAL(38, 14)
+);
+""")
+cursor.execute("""
+CREATE TABLE `nyc_criminal_crime` (
+    `Entry_#` INT NOT NULL KEY
+    `Report_#` VARCHAR(14) NOT NULL, 
+    `first_name` VARCHAR(14) NOT NULL, 
+    `last_name` VARCHAR(14) NOT NULL, 
+    `DOB` DATE NOT NULL,
+    `height` VARCHAR(14),
+    `criminal_id` INT NOT NULL
 );
 """)
 
@@ -99,6 +110,10 @@ table_data = {
     "nyc_crime_data": {
         "file_path":"test_nyc_crime_data.txt",
         "insert_query": "INSERT INTO nyc_crime_data (Crime_ID, `Report_#`, Crime_Date, Crime_Time, Crime_Class, Crime_Type, Area_Name, Latitude, Longitude) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
+    },    
+    "nyc_criminal_crime": {
+        "file_path":"test_nyc_criminal_crime.txt",
+        "insert_query": "INSERT INTO nyc_criminal_crime (`Entry_#`, `Report_#`,first_name,last_name,DOB,height,criminal_id) VALUES (%s, %s, %s, %s, %s, %s, %s)",
     },    
 }
 
