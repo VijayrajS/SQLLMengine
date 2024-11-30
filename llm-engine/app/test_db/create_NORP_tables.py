@@ -243,6 +243,13 @@ table_data = {
         ) VALUES (%s, %s);
         """
     }, 
+    "us_population": {
+        "file_path":"us_population.txt",
+        "insert_query": """INSERT INTO us_population (
+            CensurYear, State, PopulationCount
+        ) VALUES (%s, %s, %s);
+        """
+    }, 
 }
 
 for table in table_data:
