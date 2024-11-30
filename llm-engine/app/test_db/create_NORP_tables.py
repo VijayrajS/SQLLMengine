@@ -233,7 +233,7 @@ table_data = {
         "insert_query": """INSERT INTO us_shootings (
             IncidentID, Address, IncidentDate, State, CityOrCountry, VictimsKilled, VictimsInjured, 
             SuspectsInjured, SuspectsKilled, SuspectsArrested
-        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s);
+        ) VALUES (%s, %s, (STR_TO_DATE('%s','%M %d, %Y')), %s, %s, %s, %s, %s, %s, %s);
         """
     },
     "us_population_county": {
