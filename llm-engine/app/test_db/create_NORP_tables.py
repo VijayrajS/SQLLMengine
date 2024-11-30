@@ -182,7 +182,11 @@ CREATE TABLE food_access (
     TractSNAP FLOAT
 );
 """)
-
+cursor.execute("""CREATE TABLE us_population_county (
+    PopulationCount INT,
+    County VARCHAR(100)
+);
+""")
 
 # Function to upload data from a text file
 def upload_data_from_file(file_path, insert_query):
@@ -196,36 +200,49 @@ def upload_data_from_file(file_path, insert_query):
 
 # Path to the text file with data
 table_data = {
-    "economic_income_and_benefits": {
+    "food_access": {
         "file_path":"food_access.txt",
         "insert_query": """INSERT INTO food_access (
-    CensusTract, State, County, Urban, Pop2010, Ohu2010, LILATracts_1And10, LILATracts_halfAnd10, 
-    LILATracks_1And20, LILATractsVehicle, HUNVFlag, LowIncomeTracts, PovertyRate, MedianFamilyIncome, 
-    LA1and10, LAhalfand10, LA1and20, LATracts_half, LATracts1, LATracts10, LATracts20, LATractsVehicle_20, 
-    LAPOP1_10, LAPOP05_10, LAPOP1_20, LALOWI1_10, LALOWI05_10, LALOWI1_20, lapophalf, lalowihalf, 
-    lakidshalf, laseniorshalf, lawhitehalf, lablackhalf, laasianhalf, lanhopihalf, laaianhalf, laomultirhalf, 
-    lahisphalf, lahunvhalf, lasnaphalf, lapop1, lalowi1, lakids1, laseniors1, lawhite1, lablack1, laasian1, 
-    lanhopi1, laaian1, laomultir1, lahisp1, lahunv1, lasnap1, lapop10, lalowi10, lakids10, laseniors10, 
-    lawhite10, lablack10, laasian10, lanhopi10, laaian10, laomultir10, lahisp10, lahunv10, lasnap10, 
-    lapop20, lalowi20, lakids20, laseniors20, lawhite20, lablack20, laasian20, lanhopi20, laaian20, 
-    laomultir20, lahisp20, lahunv20, lasnap20, TractLOWI, TractKids, TractSeniors, TractWhite, TractBlack, 
-    TractAsian, TractNHOPI, TractAIAN, TractOMultir, TractHispanic, TractHUNV, TractSNAP
-) VALUES (
-    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 
-    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 
-    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 
-    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
-);
-""",
+		CensusTract, State, County, Urban, Pop2010, Ohu2010, LILATracts_1And10, LILATracts_halfAnd10, 
+		LILATracks_1And20, LILATractsVehicle, HUNVFlag, LowIncomeTracts, PovertyRate, MedianFamilyIncome, 
+		LA1and10, LAhalfand10, LA1and20, LATracts_half, LATracts1, LATracts10, LATracts20, LATractsVehicle_20, 
+		LAPOP1_10, LAPOP05_10, LAPOP1_20, LALOWI1_10, LALOWI05_10, LALOWI1_20, lapophalf, lalowihalf, 
+		lakidshalf, laseniorshalf, lawhitehalf, lablackhalf, laasianhalf, lanhopihalf, laaianhalf, laomultirhalf, 
+		lahisphalf, lahunvhalf, lasnaphalf, lapop1, lalowi1, lakids1, laseniors1, lawhite1, lablack1, laasian1, 
+		lanhopi1, laaian1, laomultir1, lahisp1, lahunv1, lasnap1, lapop10, lalowi10, lakids10, laseniors10, 
+		lawhite10, lablack10, laasian10, lanhopi10, laaian10, laomultir10, lahisp10, lahunv10, lasnap10, 
+		lapop20, lalowi20, lakids20, laseniors20, lawhite20, lablack20, laasian20, lanhopi20, laaian20, 
+		laomultir20, lahisp20, lahunv20, lasnap20, TractLOWI, TractKids, TractSeniors, TractWhite, TractBlack, 
+		TractAsian, TractNHOPI, TractAIAN, TractOMultir, TractHispanic, TractHUNV, TractSNAP
+	) VALUES (
+		%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 
+		%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 
+		%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 
+		%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+	);
+	""",
     },
-    "nyc_crime_data": {
-        "file_path":"test_nyc_crime_data.txt",
-        "insert_query": "INSERT INTO nyc_crime_data (Crime_ID, `Report_#`, Crime_Date, Crime_Time, Crime_Class, Crime_Type, Area_Name, Latitude, Longitude) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
-    },    
-    "nyc_criminal_crime": {
-        "file_path":"test_nyc_criminal_crime.txt",
-        "insert_query": "INSERT INTO nyc_criminal_crime (`Entry_#`, `Report_#`,first_name,last_name,DOB,height,criminal_id) VALUES (%s, %s, %s, %s, %s, %s, %s)",
-    },    
+    "experiencing_homelessness_age_demographics": {
+        "file_path":"experiencing_homelessness_age_demographics.txt",
+        "insert_query": """INSERT INTO experiencing_homelessness_age_demographics (
+    	CALENDAR_YEAR, LOCATION, AGE_GROUP_PUBLIC, EXPERIENCING_HOMELESSNESS_CNT
+		) VALUES (%s, %s, %s, %s);"""
+	},    
+    "us_shootings": {
+        "file_path":"us_shootings.txt",
+        "insert_query": """INSERT INTO us_shootings (
+            IncidentID, Address, IncidentDate, State, CityOrCountry, VictimsKilled, VictimsInjured, 
+            SuspectsInjured, SuspectsKilled, SuspectsArrested
+        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s);
+        """
+    },
+    "us_population_county": {
+        "file_path":"us_population_county.txt",
+        "insert_query": """INSERT INTO us_population_county (
+            PopulationCount, County
+        ) VALUES (%s, %s);
+        """
+    }, 
 }
 
 for table in table_data:

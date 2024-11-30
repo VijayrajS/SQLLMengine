@@ -1,0 +1,5 @@
+10,014,009; los angeles
+5,275,541; cook
+4,420,568; maricopa
+3,298,634; san diego
+3,186,989; orange

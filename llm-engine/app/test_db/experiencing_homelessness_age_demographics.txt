@@ -1,0 +1,5 @@
+2,017; California; 25-34; 28,654
+2,017; California; 35-44; 25,831
+2,017; California; 45-54; 27,651
+2,017; California; 55-64; 23,396
+2,017; California; 65+; 7,111
